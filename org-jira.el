@@ -609,7 +609,7 @@ Entry to this mode calls the value of `org-jira-mode-hook'."
    org-jira-users
    (mapcar (lambda (user)
              (cons (org-jira-decode (cdr (assoc 'displayName user)))
-                   (org-jira-decode (cdr (assoc 'accountId user)))))
+                   (org-jira-decode (cdr (assoc 'name user)))))
            (jiralib-get-users project-key))))
 
 (defun org-jira-get-reporter-candidates (project-key)
@@ -618,7 +618,7 @@ Entry to this mode calls the value of `org-jira-mode-hook'."
    org-jira-users
    (mapcar (lambda (user)
              (cons (org-jira-decode (cdr (assoc 'displayName user)))
-                   (org-jira-decode (cdr (assoc 'accountId user)))))
+                   (org-jira-decode (cdr (assoc 'name user)))))
            (jiralib-get-users project-key))))
 
 (defun org-jira-entry-put (pom property value)
@@ -1732,6 +1732,7 @@ that should be bound to an issue."
           (equal summary ""))
       (error "Must provide all information!"))
   (let* ((project-components (jiralib-get-components project))
+         (component (completing-read "Component: " (mapcar 'cdr project-components)))
          (jira-users (org-jira-get-assignable-users project))
          (user (completing-read "Assignee: " (mapcar 'car jira-users)))
          (priority (car (rassoc (org-jira-read-priority) (jiralib-get-priorities))))
@@ -1739,6 +1740,7 @@ that should be bound to an issue."
           `((fields
              (project (key . ,project))
              (parent (key . ,parent-id))
+             (components ((name . ,component)))
              (issuetype (id . ,(car (rassoc type (if (and (boundp 'parent-id) parent-id)
                                                      (jiralib-get-subtask-types)
                                                    (jiralib-get-issue-types-by-project project))))))
@@ -1748,7 +1750,7 @@ that should be bound to an issue."
                                    "")))
              (description . ,description)
              (priority (id . ,priority))
-             (assignee (accountId . ,(or (cdr (assoc user jira-users)) user)))))))
+             (assignee (name . ,(or (cdr (assoc user jira-users)) user)))))))
     ticket-struct))
 
 ;;;###autoload
