@@ -1,0 +1,52 @@
+# Update to your own before hacking in here
+:url := jiralib-url
+
+# Set after authenticating with the remote
+:auth := my-jiralib-token-string
+
+:project = AHU
+
+#GET :url/rest/api/2/issue/EX-2
+GET :url/rest/api/2/user/assignable/search?project=:project&maxResults=1000
+:auth
+#
+
+# Get single issue
+GET :url/rest/api/2/issue/:project-2
+:auth
+#
+
+# Get search of issues
+POST :url/rest/api/2/search
+Content-Type: application/json
+:auth
+{
+  "maxResults": "2"
+}
+#
+
+# {
+#   "errorMessages": [],
+#   "errors": {
+#     "assignee": "Specify a valid value for assignee"
+#   }
+#
+# Create an issue
+POST :url/rest/api/2/issue
+Content-Type: application/json
+:auth
+{
+  "fields": {
+    "project":{
+      "key":"AHU"
+    },
+    "parent":{
+      "key":null
+    },
+    "issuetype":{
+      "id":"10003"
+    },
+    "summary":"some epic with no assignee",
+    "description":"some epic with no assignee",
+    "priority":{"id":"3"},
+    "assignee":{"accountId":null}}}

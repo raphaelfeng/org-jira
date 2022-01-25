@@ -572,6 +572,12 @@ Entry to this mode calls the value of `org-jira-mode-hook'."
   (if org-jira-mode
       (run-mode-hooks 'org-jira-mode-hook)))
 
+(defun org-jira-maybe-activate-mode ()
+  "Having hooks can be an expensive operation, and they are invoked each
+time the mode is started - we should only ever re-activate the mode if
+it isn't already on."
+  (unless (bound-and-true-p org-jira-mode) (org-jira-mode t)))
+
 (defun org-jira-get-project-name (proj)
   (org-jira-find-value proj 'key))
 
@@ -602,10 +608,11 @@ Entry to this mode calls the value of `org-jira-mode-hook'."
 (defun org-jira-get-project-lead (proj)
   (org-jira-find-value proj 'lead 'name))
 
+;; This is mapped to accountId and not username, so we need nil not blank string.
 (defun org-jira-get-assignable-users (project-key)
   "Get the list of assignable users for PROJECT-KEY, adding user set jira-users first."
   (append
-   '(("Unassigned" . ""))
+   '(("Unassigned" . nil))
    org-jira-users
    (mapcar (lambda (user)
              (cons (org-jira-decode (cdr (assoc 'displayName user)))
@@ -665,7 +672,7 @@ to change the property names this sets."
   (let ((projects-file (expand-file-name "projects-list.org" (org-jira--ensure-working-dir))))
     (or (find-buffer-visiting projects-file)
         (find-file projects-file))
-    (org-jira-mode t)
+    (org-jira-maybe-activate-mode)
     (save-excursion
       (let* ((oj-projs (jiralib-get-projects)))
         (mapc (lambda (proj)
@@ -805,7 +812,7 @@ This format is typically generated from org-jira-worklogs-to-org-clocks call."
   (org-end-of-line)
   (insert "\n")
   (insert (format "  :id: %s\n" (cadddr clock-entry)))
-  (when (caddr clock-entry) (insert (format "  %s\n" (org-jira-decode (caddr clock-entry))))) ;; No comment is nil, so don't print it
+  (when (caddr clock-entry) (insert (replace-regexp-in-string "^\\*" "-" (format "  %s\n" (org-jira-decode (caddr clock-entry)))))) ;; No comment is nil, so don't print it
   )
 
 (defun org-jira-logbook-reset (issue-id filename &optional clocks)
@@ -915,9 +922,10 @@ jql."
   "Get issue summary from point and place next to issue id from jira"
   (interactive)
   (let ((jira-id (thing-at-point 'symbol)))
+    (unless jira-id (error "ORG_JIRA_ERROR: JIRA-ID missing in org-jira-get-summary!"))
     (forward-symbol 1)
     (insert (format " - %s"
-                    (cdr (assoc 'summary (car (org-jira-get-issue-by-id jira-id))))))))
+                    (cdr (assoc 'summary (assoc 'fields (car (org-jira-get-issue-by-id jira-id)))))))))
 
 ;;;###autoload
 (defun org-jira-get-summary-url ()
@@ -1084,7 +1092,7 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
     (let (p)
       (with-current-buffer (org-jira--get-project-buffer Issue)
         (org-jira-freeze-ui
-          (org-jira-mode t)
+          (org-jira-maybe-activate-mode)
           (org-jira--maybe-render-top-heading proj-key)
           (setq p (org-find-entry-with-id issue-id))
           (save-restriction
@@ -1129,30 +1137,30 @@ ORG-JIRA-PROJ-KEY-OVERRIDE being set before and after running."
             (mapc
              (lambda (heading-entry)
                (ensure-on-issue-id-with-filename issue-id filename
-                 (let* ((entry-heading
-                         (concat (symbol-name heading-entry)
-                                 (format ": [[%s][%s]]"
-                                         (concat jiralib-url "/browse/" issue-id) issue-id))))
-                   (setq p (org-find-exact-headline-in-buffer entry-heading))
-                   (if (and p (>= p (point-min))
-                            (<= p (point-max)))
-                       (progn
-                         (goto-char p)
-                         (org-narrow-to-subtree)
-                         (goto-char (point-min))
-                         (forward-line 1)
-                         (delete-region (point) (point-max)))
-                     (if (org-goto-first-child)
-                         (org-insert-heading)
-                       (goto-char (point-max))
-                       (org-insert-subheading t))
-                     (org-jira-insert entry-heading "\n"))
+                                                 (let* ((entry-heading
+                                                         (concat (symbol-name heading-entry)
+                                                                 (format ": [[%s][%s]]"
+                                                                         (concat jiralib-url "/browse/" issue-id) issue-id))))
+                                                   (setq p (org-find-exact-headline-in-buffer entry-heading))
+                                                   (if (and p (>= p (point-min))
+                                                            (<= p (point-max)))
+                                                       (progn
+                                                         (goto-char p)
+                                                         (org-narrow-to-subtree)
+                                                         (goto-char (point-min))
+                                                         (forward-line 1)
+                                                         (delete-region (point) (point-max)))
+                                                     (if (org-goto-first-child)
+                                                         (org-insert-heading)
+                                                       (goto-char (point-max))
+                                                       (org-insert-subheading t))
+                                                     (org-jira-insert entry-heading "\n"))
 
-                   ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
-                   (org-jira-insert
-                    (replace-regexp-in-string
-                     "^" "  "
-                     (format "%s" (slot-value Issue heading-entry)))))))
+                                                   ;;  Insert 2 spaces of indentation so Jira markup won't cause org-markup
+                                                   (org-jira-insert
+                                                    (replace-regexp-in-string
+                                                     "^" "  "
+                                                     (format "%s" (slot-value Issue heading-entry)))))))
              '(description))
 
             (when org-jira-download-comments
@@ -1181,9 +1189,12 @@ ISSUES is a list of `org-jira-sdk-issue' records."
 
   ;; If we have any left, we map over them.
   (mapc 'org-jira--render-issue Issues)
-  ;; Oh, are you the culprit?
-  ;; (switch-to-buffer (org-jira--get-project-buffer (-last-item Issues)))
-  )
+
+  ;; Prior text: "Oh, are you the culprit?" - Not sure if this caused an issue at some point.
+  ;; We want to ensure we fix broken org narrowing though, by doing org-show-all and then org-cycle.
+  (switch-to-buffer (org-jira--get-project-buffer (-last-item Issues)))
+  (org-show-all)
+  (org-cycle))
 
 ;;;###autoload
 (defun org-jira-update-comment ()
@@ -1218,7 +1229,7 @@ ISSUES is a list of `org-jira-sdk-issue' records."
 (defun org-jira-add-comment (issue-id filename comment)
   "For ISSUE-ID in FILENAME, add a new COMMENT string to the issue region."
   (interactive
-   (let* ((issue-id (org-jira-id))
+   (let* ((issue-id (org-jira-get-from-org 'issue 'id))
           (filename (org-jira-filename))
           (comment (read-string (format  "Comment (%s): " issue-id))))
      (list issue-id filename comment)))
@@ -1269,12 +1280,28 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
         (time-spent-seconds . ,(cdr (assoc 'time-spent-seconds worklog-time)))
         ))))
 
+(defun org-jira-worklog-to-hashtable (issue-id)
+  "Given ISSUE-ID, return a hashtable of worklog-id -> jira worklog."
+  (let ((worklog-hashtable (make-hash-table :test 'equal)))
+    (mapc
+     (lambda (worklog)
+       (let ((worklog-id (cdr (assoc 'id worklog))))
+         (puthash worklog-id worklog worklog-hashtable)))
+     (jiralib-worklog-import--filter-apply
+      (org-jira-find-value
+       (jiralib-get-worklogs
+        issue-id)
+       'worklogs)))
+    worklog-hashtable))
+
 ;;;###autoload
 (defun org-jira-update-worklogs-from-org-clocks ()
   "Update or add a worklog based on the org clocks."
   (interactive)
-  (let ((issue-id (org-jira-get-from-org 'issue 'key))
-        (filename (org-jira-filename)))
+  (let* ((issue-id (org-jira-get-from-org 'issue 'key))
+         (filename (org-jira-filename))
+         ;; Fetch all workflogs for this issue
+         (jira-worklogs-ht (org-jira-worklog-to-hashtable issue-id)))
     (org-jira-log (format "About to sync worklog for issue: %s in file: %s"
                   issue-id filename))
     (ensure-on-issue-id-with-filename issue-id filename
@@ -1291,39 +1318,40 @@ Expects input in format such as: [2017-04-05 Wed 01:00]--[2017-04-05 Wed 01:46] 
               (setq next-clock-point (point)))
             (let ((clock-content
                    (buffer-substring-no-properties (point) next-clock-point)))
-
-              ;; @TODO :optim: This is inefficient, calling the resync on each update/insert event,
-              ;; ideally we would track and only insert/update changed entries, as well
-              ;; only call a resync once (when the entire list is processed, which will
-              ;; basically require a dry run to see how many items we should be updating.
-
               ;; Update via jiralib call
               (let* ((worklog (org-jira-org-clock-to-jira-worklog org-time clock-content))
                      (comment-text (cdr (assoc 'comment worklog)))
                      (comment-text (if (string= (org-trim comment-text) "") nil comment-text)))
                 (if (cdr (assoc 'worklog-id worklog))
-                    (jiralib-update-worklog
-                     issue-id
-                     (cdr (assoc 'worklog-id worklog))
-                     (cdr (assoc 'started worklog))
-                     (cdr (assoc 'time-spent-seconds worklog))
-                     comment-text
-                     (cl-function
-                      (lambda (&key data &allow-other-keys)
-                        (org-jira-log (format "Updating worklog from org-jira-update-worklogs-from-org-clocks call"))
-                        (org-jira-update-worklogs-for-issue issue-id filename))))
+                    ;; If there is a worklog in jira for this ID, check if the worklog has changed.
+                    ;; If it has changed, update the worklog.
+                    ;; If it has not changed, skip.
+                    (let ((jira-worklog (gethash (cdr (assoc 'worklog-id worklog)) jira-worklogs-ht)))
+                      (when (and jira-worklog
+                                 ;; Check if the entries are differing lengths.
+                                 (or (not (= (cdr (assoc 'timeSpentSeconds jira-worklog))
+                                         (cdr (assoc 'time-spent-seconds worklog))))
+                                 ;; Check if the entries start at different times.
+                                     (not (string= (cdr (assoc 'started jira-worklog))
+                                               (cdr (assoc 'started worklog))))))
+                        (jiralib-update-worklog
+                         issue-id
+                         (cdr (assoc 'worklog-id worklog))
+                         (cdr (assoc 'started worklog))
+                         (cdr (assoc 'time-spent-seconds worklog))
+                         comment-text
+                         nil))) ; no callback - synchronous
                   ;; else
                   (jiralib-add-worklog
                    issue-id
                    (cdr (assoc 'started worklog))
                    (cdr (assoc 'time-spent-seconds worklog))
                    comment-text
-                   (cl-function
-                    (lambda (&key data &allow-other-keys)
-                      (org-jira-log (format "Adding worklog from org-jira-update-worklogs-from-org-clocks call"))
-                      (org-jira-update-worklogs-for-issue issue-id filename))))
+                   nil) ; no callback - synchronous
                   )
                 )))))
+      (org-jira-log (format "Updating worklog from org-jira-update-worklogs-from-org-clocks call"))
+      (org-jira-update-worklogs-for-issue issue-id filename)
       )))
 
 (defun org-jira-update-worklog ()
@@ -1750,7 +1778,8 @@ that should be bound to an issue."
                                    "")))
              (description . ,description)
              (priority (id . ,priority))
-             (assignee (name . ,(or (cdr (assoc user jira-users)) user)))))))
+             ;; name should be nil if Unassigned, not the key slot.
+             (assignee (name . ,(or (cdr (assoc user jira-users)) nil)))))))
     ticket-struct))
 
 ;;;###autoload
@@ -1891,7 +1920,9 @@ Where issue-id will be something such as \"EX-22\"."
       (outline-show-all)
       (outline-hide-sublevels 2)
       (goto-char (point-min))
-      (while (and (looking-at "^ *$")
+      (while (and (or (looking-at "^ *$")
+                      (looking-at "^#.*$")
+                      (looking-at "^\\* .*"))
                   (not (eobp)))
         (forward-line))
       (outline-next-visible-heading 1)
@@ -2246,7 +2277,7 @@ it is a symbol, it will be converted to string."
 
 (defun org-jira-filename ()
   "Get the ID entry for the current heading."
-  (org-entry-get (point) "filename"))
+  (org-jira-get-from-org 'issue 'filename))
 
 ;;;###autoload
 (defun org-jira-browse-issue ()
@@ -2372,7 +2403,7 @@ boards -  list of `org-jira-sdk-board' records."
   ;;(org-jira-sdk-dump board)
   (with-slots (id name url board-type jql limit) board
     (with-current-buffer (org-jira--get-boards-buffer)
-      (org-jira-mode t)
+      (org-jira-maybe-activate-mode)
       (org-jira-freeze-ui
         (org-save-outline-visibility t
           (save-restriction

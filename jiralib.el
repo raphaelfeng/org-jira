@@ -82,6 +82,7 @@
 ;;; Code:
 
 (eval-when-compile (require 'cl))
+(require 'cl-seq)
 (require 'soap-client)
 (require 'request)
 (require 'json)
@@ -198,8 +199,29 @@ This is maintained by `jiralib-login'.")
 
 (defcustom jiralib-worklog-import--filters-alist
   (list
-   '(nil "WorklogUpdatedByCurrentUser" (lambda (wl) (let-alist wl (when (and wl (string-equal (downcase (or jiralib-user-login-name user-login-name)) (downcase .updateAuthor.name))) wl))))
-   '(nil "WorklogAuthoredByCurrentUser" (lambda (wl) (let-alist wl (when (and wl (string-equal (downcase (or jiralib-user-login-name user-login-name)) (downcase .author.name))) wl)))))
+   '(nil "WorklogUpdatedByCurrentUser"
+         (lambda (wl)
+           (let-alist wl
+             (when
+                 (and wl
+                      (string-equal
+                       (downcase
+                        (or jiralib-user-login-name user-login-name ""))
+                       (downcase (or .updateAuthor.name
+                                     (car (split-string (or .updateAuthor.emailAddress "") "@"))
+                                     ""))))
+               wl))))
+   '(nil "WorklogAuthoredByCurrentUser"
+         (lambda (wl)
+           (let-alist wl
+             (when
+                 (and wl
+                      (string-equal
+                       (downcase
+                        (or jiralib-user-login-name user-login-name))
+                       (downcase (or .author.name
+                                     (car (split-string (or .author.emailAddress "") "@"))))))
+               wl)))))
   "A list of triplets: ('Global-Enable 'Descriptive-Label 'Function-Definition)
 that apply worklog predicate filters during import.
 
@@ -208,6 +230,17 @@ Example: (list '('t \"descriptive-predicate-label\" (lambda (x) x)))"
   :group 'org-jira)
 
 
+(defcustom jiralib-update-issue-fields-exclude-list nil
+  "A list of symbols to check for exclusion on updates based on matching key.
+Key names should be one of components, description, assignee, reporter, summary, issuetype."
+  :type '(set (const :tag "Exclude components" components)
+              (const :tag "Exclude description" description)
+              (const :tag "Exclude assignee" assignee)
+              (const :tag "Exclude reporter" reporter)
+              (const :tag "Exclude summary" summary)
+              (const :tag "Exclude priority" priority)
+              (const :tag "Exclude issue type" issuetype))
+  :group 'org-jira)
 
 (defun jiralib-load-wsdl ()
   "Load the JIRA WSDL descriptor."
@@ -232,7 +265,9 @@ After a successful login, store the authentication token in
                                                        (url-host (url-generic-parse-url jiralib-url))
                                                      jiralib-host)
                                              ;; secrets.el wouldn’t accept a number.
-                                             :port (number-to-string (url-port (url-generic-parse-url jiralib-url)))
+                                             :port (list (number-to-string (url-port (url-generic-parse-url jiralib-url)))
+							 (url-port (url-generic-parse-url jiralib-url))
+							 (url-type (url-generic-parse-url jiralib-url)))
                                              :require '(:user :secret)
                                              :create t)))
            user secret)
@@ -307,7 +342,7 @@ request.el, so if at all possible, it should be avoided."
       (car (apply 'jiralib--call-it method params))
     (unless jiralib-token
       (call-interactively 'jiralib-login))
-    (case (intern method)
+    (cl-case (intern method)
       ('getStatuses (jiralib--rest-call-it "/rest/api/2/status"))
       ('getIssueTypes (jiralib--rest-call-it "/rest/api/2/issuetype"))
       ('getSubTaskIssueTypes (jiralib--rest-call-it "/rest/api/2/issuetype"))
@@ -439,6 +474,7 @@ Pass ARGS to jiralib-call."
 Invoking COMPLETE-CALLBACK when the
 JIRALIB-COMPLETE-CALLBACK is non-nil, request finishes, and
 passing ARGS to REQUEST."
+  (unless api (error "jiralib--rest-call-it was called with a NIL api value."))
   (setq args
         (mapcar
          (lambda (arg)
@@ -454,6 +490,21 @@ passing ARGS to REQUEST."
                   :headers `(,jiralib-token ("Content-Type" . "application/json"))
                   :parser 'jiralib--json-read
                   :complete jiralib-complete-callback
+                  ;; Ensure we have useful errors
+                  :error
+                  (lexical-let
+                      ((my-api api)
+                       (my-args args))
+                    (cl-function
+                       (lambda (&key data &allow-other-keys)
+                         (print "JIRA_ERROR - see your *Messages* buffer for more details.")
+                         (print "JIRA_ERROR REQUEST: ")
+                         (print my-api)
+                         (print my-args)
+                         (print "JIRA_ERROR RESPONSE: ")
+                         (print data)
+                         (error "JIRA_ERROR - see your *Messages* buffer for more details.")
+                         )))
                   args))
           nil))
 
@@ -482,7 +533,7 @@ first is normally used."
 
 (defun jiralib-make-list (data field)
   "Map all assoc elements in DATA to the value of FIELD in that element."
-  (loop for element in data
+  (cl-loop for element in data
         collect (cdr (assoc field element))))
 
 (defun jiralib-make-assoc-list (data key-field value-field)
@@ -491,7 +542,7 @@ first is normally used."
 DATA is a list of association lists (a SOAP array-of type)
 KEY-FIELD is the field to use as the key in the returned alist
 VALUE-FIELD is the field to use as the value in the returned alist"
-  (loop for element in data
+  (cl-loop for element in data
         collect (cons (cdr (assoc key-field element))
                       (cdr (assoc value-field element)))))
 
@@ -530,14 +581,21 @@ emacs-lisp"
   "Return jira rest api for issue KEY."
   (concat "rest/api/2/issue/" key))
 
+(defun jiralib-filter-fields-by-exclude-list (exclude-list fields)
+  (cl-remove-if
+   (lambda (el) (cl-member (car el) exclude-list)) fields))
+
 (defun jiralib-update-issue (key fields &optional callback)
   "Update the issue with id KEY with the values in FIELDS, invoking CALLBACK."
-  (jiralib-call
-   "updateIssue"
-   callback
-   key (if jiralib-use-restapi
-           fields
-         (jiralib-make-remote-field-values fields))))
+  (let ((filtered-fields (jiralib-filter-fields-by-exclude-list
+                          jiralib-update-issue-fields-exclude-list
+                          fields)))
+    (jiralib-call
+     "updateIssue"
+     callback
+     key (if jiralib-use-restapi
+             filtered-fields
+           (jiralib-make-remote-field-values filtered-fields)))))
 
 (defvar jiralib-status-codes-cache nil)
 
@@ -861,14 +919,14 @@ Return nil if the field is not found"
   ;;       (cdr (assoc 'fullname user))))))
 
 (defun jiralib-get-user-fullname (account-id)
-  "Return the full name (displaName) of the user with accountId."
-  (loop for user in (jiralib-get-users nil)
+  "Return the full name (displayName) of the user with ACCOUNT-ID."
+  (cl-loop for user in (jiralib-get-users nil)
         when (rassoc account-id user)
         return (cdr (assoc 'displayName user))))
 
 (defun jiralib-get-user-account-id (project full-name)
     "Return the account-id (accountId) of the user with FULL-NAME (displayName) in PROJECT."
-  (loop for user in (jiralib-get-users project)
+  (cl-loop for user in (jiralib-get-users project)
         when (rassoc full-name user)
         return (cdr (assoc 'accountId user))))
 
@@ -1034,7 +1092,7 @@ Return no more than MAX-NUM-RESULTS."
   (unless jiralib-users-cache
     (setq jiralib-users-cache
           (jiralib-call "getUsers" nil project-key))
-    (loop for (name . id) in org-jira-users do
+    (cl-loop for (name . id) in org-jira-users do
           (setf jiralib-users-cache (append (list (jiralib-get-user id)) jiralib-users-cache))))
   jiralib-users-cache)
 
@@ -1076,13 +1134,13 @@ Auxiliary Notes:
                  (boundp 'unwrap-worklog-records-fn)
                  (functionp unwrap-worklog-records-fn))
                 unwrap-worklog-records-fn
-              (lambda (x) (coerce x 'list))))
+              (lambda (x) (cl-coerce x 'list))))
       (setq rewrap-worklog-records-fn
             (if (and
                  (boundp 'rewrap-worklog-records-fn)
                  (functionp rewrap-worklog-records-fn))
                 rewrap-worklog-records-fn
-              (lambda (x) (remove 'nil (coerce x 'vector)))))
+              (lambda (x) (remove 'nil (cl-coerce x 'vector)))))
       (setq predicate-fn-lst
             (if (and (boundp 'predicate-fn-lst)
                      (not (null predicate-fn-lst))
